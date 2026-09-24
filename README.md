@@ -64,7 +64,9 @@ PYTHONPATH=src python3 -m photon_fab.acceptance
 PYTHONPATH=src python3 -m photon_fab.api --database photon.sqlite3 --port 8080
 ```
 
-HTTP 健康检查为 `GET /health`，登录、批次、测量和分析请求均支持 JSON；服务不访问外部网络，可在单个 Linux 应用容器中完成验收。
+HTTP 健康检查为 `GET /health`，登录、批次、测量和分析请求均支持 JSON；服务不访问外部网络，可在单个 Linux 应用容器中完成验收。除健康检查和 `POST /login` 外，所有请求通过 `Authorization: Bearer <token>` 携带会话。
+
+放行决定接口为 `POST /lots/{lot_id}/release`，请求体为 `{"decision": "release"|"hold"|"reject", "reason": "..."}`：只有质量角色或管理员能提交决定，操作员和工程师会得到稳定的 `403 {"error": "permission denied"}` 响应，批次状态保持不变。用户被停用（`POST /users/{user_id}/deactivate`，仅管理员）后，其旧会话立即失效。所有决定与批次事件写入哈希串联的 `lot_events` 审计链，可通过 `GET /lots/{lot_id}/audit` 查看事件、用 `GET /audit/verify` 离线校验完整性，任何篡改都会使校验失败。用户开通由管理员通过 `POST /users` 完成。
 
 ## HTTP 服务
 
