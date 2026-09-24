@@ -9,13 +9,15 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .errors import Forbidden, Unauthorized
+
 
 ROLES = {"operator", "engineer", "quality", "admin"}
 PERMISSIONS = {
     "operator": {"read", "measure"},
     "engineer": {"read", "measure", "analyze", "submit"},
-    "quality": {"read", "measure", "analyze", "approve", "release"},
-    "admin": {"read", "measure", "analyze", "submit", "approve", "release", "admin"},
+    "quality": {"read", "measure", "analyze", "review", "approve"},
+    "admin": {"read", "measure", "analyze", "submit", "review", "approve", "admin"},
 }
 
 
@@ -47,33 +49,40 @@ class Auth:
             raise ValueError("invalid role or password")
         salt = secrets.token_hex(16)
         self.db.execute("INSERT INTO users VALUES(?,?,?,?,1,?)", (user_id, role, salt, _hash(password, salt), datetime.now(timezone.utc).isoformat()))
-        self.db.commit()
         return User(user_id, role, True)
 
     def login(self, user_id: str, password: str) -> str:
         row = self.db.execute("SELECT role,salt,password_hash,active FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not row or not row[3] or not hmac.compare_digest(_hash(password, row[1]), row[2]):
-            raise PermissionError("invalid credentials")
+            raise Unauthorized("invalid credentials")
         token = secrets.token_urlsafe(24)
         self.db.execute("INSERT INTO sessions VALUES(?,?,datetime('now','+8 hours'),1)", (token, user_id))
         self.db.commit()
         return token
 
     def current(self, token: str) -> User:
+        if not token:
+            raise Unauthorized("authentication required")
         row = self.db.execute("""SELECT u.user_id,u.role,u.active,s.active,s.expires_at
             FROM sessions s JOIN users u ON u.user_id=s.user_id
             WHERE s.token=?""", (token,)).fetchone()
-        if not row or not row[2] or not row[3] or datetime.fromisoformat(row[4]).replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-            raise PermissionError("session expired")
+        # 用户停用会同时把 users.active 与该用户全部 sessions.active 置 0，
+        # 因此旧 token 在此处立即失效，无法再通过任何权限检查。
+        if not row or not row[2] or not row[3]:
+            raise Unauthorized("session invalidated")
+        if datetime.fromisoformat(row[4]).replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+            self.db.execute("UPDATE sessions SET active=0 WHERE token=?", (token,))
+            self.db.commit()
+            raise Unauthorized("session expired")
         return User(row[0], row[1], True)
 
     def require(self, token: str, permission: str) -> User:
         user = self.current(token)
         if permission not in PERMISSIONS[user.role]:
-            raise PermissionError("permission denied")
+            raise Forbidden(f"role {user.role!r} may not {permission!r}")
         return user
 
     def deactivate(self, user_id: str) -> None:
+        """在调用方事务内停用用户并立即使其全部会话失效。"""
         self.db.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
         self.db.execute("UPDATE sessions SET active=0 WHERE user_id=?", (user_id,))
-        self.db.commit()

@@ -57,14 +57,22 @@ PYTHONPATH=src python3 -m plant_science.acceptance --workspace .
 
 ## 光电芯片研发协同服务
 
-`src/photon_fab/` 提供光电芯片批次、光谱测量、科学计算、质量审批和审计的离线后台。SQLite 保存完整批次生命周期，角色权限覆盖操作员、工程师、质量人员和管理员；峰值波长、噪声 RMS、响应度、置信区间及良率计算均为确定性本地算法。
+`src/photon_fab/` 提供光电芯片批次、光谱测量、科学计算、质量复核、放行决定和审计的离线后台。SQLite 保存完整批次生命周期，角色权限覆盖操作员、工程师、质量人员和管理员；峰值波长、噪声 RMS、响应度、置信区间及良率计算均为确定性本地算法。
 
 ```bash
 PYTHONPATH=src python3 -m photon_fab.acceptance
 PYTHONPATH=src python3 -m photon_fab.api --database photon.sqlite3 --port 8080
 ```
 
-HTTP 健康检查为 `GET /health`，登录、批次、测量和分析请求均支持 JSON；服务不访问外部网络，可在单个 Linux 应用容器中完成验收。
+`GET /health` 无需认证；其余接口先 `POST /login` 取得令牌，再以 `Authorization: Bearer <token>` 访问。放行门禁规则：
+
+- 角色边界：`release/hold/reject` 决定（`POST /lots/{lot_id}/decisions`）和质量复核（`POST /lots/{lot_id}/reviews`）仅质量角色与管理员可提交；操作员、工程师稳定收到 `403`。
+- 批次状态：`release` 仅在存在结论为 `pass` 的质量复核后允许，否则返回 `409`；复核结论为 `fail` 时只能 `hold`/`reject`；`released`/`rejected` 为终态，重复复核或决定返回 `409`。
+- 会话失效：管理员经 `POST /users/{user_id}/deactivate` 停用用户后，其全部旧令牌立即失效（后续请求 `401`），且不能再登录。
+- 审计链：创建、测量、复核、放行决定及用户管理全部写入 SHA-256 哈希串联的只增 `audit_events` 表；`GET /audit-chain` 重放全链校验完整性，任一字段被改写都会使 `valid=false`；`GET /lots/{lot_id}/audit` 返回带哈希指针的批次事件。
+- 测量（操作员及以上）与分析（工程师及以上）接口的权限和行为保持不变。
+
+服务不访问外部网络，可在单个 Linux 应用容器中完成验收。
 
 ## HTTP 服务
 
